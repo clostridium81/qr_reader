@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Browser QR Code Reader</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 640px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #333;
+    }
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 1rem;
+    }
+    button {
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #f8f9fa;
+    }
+    button:hover { background: #e2e6ea; }
+    button.stop { background: #ffebee; border-color: #ffcdd2; color: #c62828; }
+    #video-container {
+      position: relative;
+      width: 100%;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      display: none;
+    }
+    video {
+      width: 100%;
+      display: block;
+    }
+    #result-box {
+      margin-top: 1rem;
+      padding: 1rem;
+      background: #f1f3f5;
+      border-radius: 6px;
+      word-break: break-all;
+    }
+    #status {
+      font-size: 12px;
+      color: #2b8a3e;
+      margin-top: 6px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>QRコードリーダー</h2>
+  
+  <div class="btn-group">
+    <button id="btn-camera">1. Webカメラで読み取る</button>
+    <button id="btn-screen">2. 画面共有(キャプチャ)で読み取る</button>
+    <button id="btn-stop" class="stop" style="display:none;">停止</button>
+  </div>
+
+  <div id="video-container">
+    <video id="video" playsinline></video>
+  </div>
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <div id="result-box">
+    <strong>読み取り結果:</strong>
+    <div id="output" style="margin-top: 8px; font-family: monospace;">未検出</div>
+    <div id="status"></div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const videoContainer = document.getElementById('video-container');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const output = document.getElementById('output');
+    const status = document.getElementById('status');
+    const btnCamera = document.getElementById('btn-camera');
+    const btnScreen = document.getElementById('btn-screen');
+    const btnStop = document.getElementById('btn-stop');
+
+    let stream = null;
+    let animationId = null;
+
+    // 1. Webカメラ起動
+    btnCamera.addEventListener('click', async () => {
+      stopStream();
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment' } 
+        });
+        startScanning(stream);
+      } catch (err) {
+        alert('カメラの起動に失敗しました: ' + err.message);
+      }
+    });
+
+    // 2. 画面キャプチャ起動
+    btnScreen.addEventListener('click', async () => {
+      stopStream();
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: { cursor: 'never' } 
+        });
+        startScanning(stream);
+      } catch (err) {
+        alert('画面キャプチャの起動に失敗しました: ' + err.message);
+      }
+    });
+
+    btnStop.addEventListener('click', stopStream);
+
+    function startScanning(mediaStream) {
+      video.srcObject = mediaStream;
+      videoContainer.style.display = 'block';
+      btnStop.style.display = 'inline-block';
+      output.textContent = 'スキャン中...';
+      status.textContent = '';
+      video.play();
+      requestAnimationFrame(tick);
+    }
+
+    function stopStream() {
+      if (animationId) cancelAnimationFrame(animationId);
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      videoContainer.style.display = 'none';
+      btnStop.style.display = 'none';
+    }
+
+    async function tick() {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        let qrText = null;
+
+        // Chrome等のネイティブAPI (BarcodeDetector) が使える場合は優先利用
+        if ('BarcodeDetector' in window) {
+          try {
+            const detector = new BarcodeDetector({ formats: ['qr_code'] });
+            const barcodes = await detector.detect(canvas);
+            if (barcodes.length > 0) {
+              qrText = barcodes[0].rawValue;
+            }
+          } catch (e) {}
+        }
+
+        // フォールバック: jsQRで解析
+        if (!qrText && window.jsQR) {
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: "dontInvert",
+          });
+          if (code) {
+            qrText = code.data;
+          }
+        }
+
+        if (qrText) {
+          handleSuccess(qrText);
+          return; // 読み取り成功で自動停止
+        }
+      }
+      animationId = requestAnimationFrame(tick);
+    }
+
+    async function handleSuccess(text) {
+      stopStream();
+      output.textContent = text;
+      try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = '-> クリップボードにコピーしました。';
+      } catch (err) {
+        status.textContent = '※クリップボードへの自動コピーに失敗しました（手動でコピーしてください）';
+      }
+    }
+  </script>
+</body>
+</html>
